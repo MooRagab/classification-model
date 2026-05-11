@@ -96,14 +96,19 @@ pip install -r requirements.txt
    - Linux/Mac: `~/.kaggle/kaggle.json`
 
 ## 3) Download and Prepare Dataset
-Default dataset: `puneet6060/intel-image-classification`
+Default dataset: `elhamafify/caltech101`
 ```bash
 python scripts/download_dataset.py --force
 ```
 
 Prepared structure:
 - `data/raw/train/<class_name>/...`
-- `data/raw/test/<class_name>/...` (if available)
+- `data/raw/test/<class_name>/...` (optional; Caltech101-style datasets often have no test split)
+
+Notes for Caltech101:
+- The script looks for a class root named `101_ObjectCategories`.
+- `BACKGROUND_Google` is excluded by default.
+- Use `--include_background` if you want to keep it as a class.
 
 ## 4) Train Model
 ```bash
@@ -154,12 +159,10 @@ Then upload an image and view top 3 predictions with confidence scores.
 
 ## Notes
 - Input size is fixed at `224x224` with `mobilenet_v2.preprocess_input`.
-- Works with any class-per-folder dataset, not only Intel.
+- Works with any class-per-folder dataset.
+- For Caltech101-style datasets, validation is created from the train split using `validation_split` when no explicit `val/` directory exists.
 - If you ever see only one class prediction (e.g., `seg_train`), dataset structure is likely nested incorrectly.
   Ensure:
-  - `data/raw/train/buildings/...`
-  - `data/raw/train/forest/...`
-  - `data/raw/train/glacier/...`
-  - `data/raw/train/mountain/...`
-  - `data/raw/train/sea/...`
-  - `data/raw/train/street/...`
+  - `data/raw/train/<class_1>/...`
+  - `data/raw/train/<class_2>/...`
+  - `data/raw/train/<class_3>/...`

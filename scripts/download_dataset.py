@@ -1,17 +1,19 @@
 import argparse
 import shutil
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 
 
-DEFAULT_DATASET = "puneet6060/intel-image-classification"
+DEFAULT_DATASET = "elhamafify/caltech101"
+DEFAULT_CLASS_ROOT = "101_ObjectCategories"
+BACKGROUND_CLASS = "BACKGROUND_Google"
 
 
 def run(cmd):
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, check=True)
-
 
 def ensure_kaggle_available():
     try:
@@ -55,25 +57,46 @@ def _find_class_root(start: Path) -> Path:
     raise RuntimeError(f"Could not find class root under: {start}")
 
 
-def normalize_intel_structure(extract_dir: Path, output_dir: Path):
-    train_src = next((p for p in [extract_dir / "seg_train", extract_dir / "train"] if p.exists()), None)
-    test_src = next((p for p in [extract_dir / "seg_test", extract_dir / "test"] if p.exists()), None)
+def _iter_class_dirs(class_root: Path, exclude_background: bool):
+    for class_dir in sorted(class_root.iterdir()):
+        if not class_dir.is_dir():
+            continue
+        if exclude_background and class_dir.name == BACKGROUND_CLASS:
+            continue
+        yield class_dir
 
-    if train_src is None:
-        candidates = [p for p in extract_dir.rglob("*") if p.is_dir() and any(x.is_dir() for x in p.iterdir())]
-        if not candidates:
-            raise RuntimeError(f"Could not infer train directory from extracted data: {extract_dir}")
-        train_src = candidates[0]
 
-    train_src = _find_class_root(train_src)
-    if test_src is not None:
-        test_src = _find_class_root(test_src)
+def _find_preferred_class_root(extract_dir: Path, class_root_name: str) -> Path:
+    direct = extract_dir / class_root_name
+    if direct.exists() and direct.is_dir():
+        return direct
 
+    matches = [p for p in extract_dir.rglob(class_root_name) if p.is_dir()]
+    if matches:
+        return matches[0]
+
+    return _find_class_root(extract_dir)
+
+
+def normalize_dataset_structure(
+    extract_dir: Path,
+    output_dir: Path,
+    class_root_name: str = DEFAULT_CLASS_ROOT,
+    exclude_background: bool = True,
+):
+    class_root = _find_preferred_class_root(extract_dir, class_root_name)
     train_out = output_dir / "train"
-    test_out = output_dir / "test"
-    copy_tree(train_src, train_out)
-    if test_src is not None:
-        copy_tree(test_src, test_out)
+    train_out.mkdir(parents=True, exist_ok=True)
+
+    copied_classes = 0
+    for class_dir in _iter_class_dirs(class_root, exclude_background=exclude_background):
+        shutil.copytree(class_dir, train_out / class_dir.name, dirs_exist_ok=True)
+        copied_classes += 1
+
+    if copied_classes == 0:
+        raise RuntimeError(f"No class directories were copied from: {class_root}")
+
+    return copied_classes
 
 
 def main():
@@ -81,6 +104,16 @@ def main():
     parser.add_argument("--dataset", default=DEFAULT_DATASET, help="Kaggle dataset slug.")
     parser.add_argument("--download_dir", default="data/downloads", help="Where to save downloaded zip.")
     parser.add_argument("--output_dir", default="data/raw", help="Prepared dataset directory.")
+    parser.add_argument(
+        "--class_root",
+        default=DEFAULT_CLASS_ROOT,
+        help="Preferred directory name that contains class folders.",
+    )
+    parser.add_argument(
+        "--include_background",
+        action="store_true",
+        help=f"Include `{BACKGROUND_CLASS}` as a normal class if it exists.",
+    )
     parser.add_argument("--force", action="store_true", help="Delete output directory before preparing.")
     args = parser.parse_args()
 
@@ -95,23 +128,33 @@ def main():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    started_at = time.time()
     run(["kaggle", "datasets", "download", "-d", args.dataset, "-p", str(download_dir), "--force"])
 
-    zip_files = sorted(download_dir.glob("*.zip"))
+    zip_files = sorted(download_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not zip_files:
         raise RuntimeError("No zip file downloaded from Kaggle.")
-    zip_path = zip_files[-1]
+
+    # Prefer zip file updated by the current download command.
+    fresh_zip = next((p for p in zip_files if p.stat().st_mtime >= started_at - 2), None)
+    zip_path = fresh_zip if fresh_zip is not None else zip_files[0]
 
     if extract_dir.exists():
         shutil.rmtree(extract_dir)
     extract_dir.mkdir(parents=True, exist_ok=True)
     extract_zip(zip_path, extract_dir)
-    normalize_intel_structure(extract_dir, output_dir)
+    copied_classes = normalize_dataset_structure(
+        extract_dir=extract_dir,
+        output_dir=output_dir,
+        class_root_name=args.class_root,
+        exclude_background=not args.include_background,
+    )
 
     print(f"Dataset prepared successfully at: {output_dir}")
-    print("Expected structure:")
+    print(f"Classes copied to train split: {copied_classes}")
+    print("Prepared structure:")
     print(f"- {output_dir / 'train'}")
-    print(f"- {output_dir / 'test'}")
+    print(f"- {output_dir / 'test'} (optional; not created unless dataset provides one)")
 
 
 if __name__ == "__main__":
